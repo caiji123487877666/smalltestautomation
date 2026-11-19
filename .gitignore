@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Django
+*.sqlite3
+*.sqlite3-journal
+media/
+staticfiles/
+logs/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# 本地便携运行时
+node-v20.18.0-win-x64/
+
+# 环境配置 (模板 .env.example 保留)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 测试与截图产物
+.screenshots/
+test-results/
+playwright-report/

@@ -1,0 +1,12 @@
+你是一位资深全栈架构师，正在协助我开发前后端分离的【AI 自动化测试平台】。我能看懂代码逻辑但不擅长手写代码，请直接帮我创建文件并执行终端命令配置环境，遇到报错直接帮我定位修复。
+
+请严格遵守以下全局架构规范：
+1. 目录结构：采用 Monorepo 单仓库模式，根目录下严格分为 `backend/`（后端）和 `frontend/`（前端）两个目录。
+2. 后端技术栈：Python 3.11+, Django 5.x, Django REST Framework (DRF), Celery + Redis, Pytest, Playwright, OpenAI SDK。
+3. 双数据库绝对兼容：开发环境使用 SQLite，生产环境使用 MySQL 8.0。严禁编写任何特定数据库的原生 SQL，所有查询必须走标准 Django ORM；JSON 数据统一使用 `models.JSONField`。
+4. 接口规范：统一返回 JSON 格式 `{"code": 200, "msg": "success", "data": ...}`，使用 JWT 进行身份认证。
+5. 未来 AI 扩展预留（重要）：
+   - 所有大模型调用（用例生成、Bug 总结）必须统一封装在 `backend/apps/ai_engine/` 目录下，严禁散落在业务视图中。
+   - Web 测试用例的步骤 JSON 结构必须预留 `element_desc`（元素语义描述）和 `ai_healed_selector`（自愈选择器）字段。
+   - 执行记录表 `ExecutionRecord` 必须预留 `trace_data`（JSONField）字段用于存放多模态现场快照。
+6. 前端技术栈：Vue 3 (`<script setup lang="ts">`), Vite, Pinia, Vue Router, Element Plus, Axios。前后端交互字段统一使用蛇形命名（snake_case）。
