@@ -5,19 +5,24 @@
 - 断言校验 / 后置变量提取
 - cURL (bash) 解析
 """
+import ipaddress
 import json
 import re
+import socket
 import uuid
 import shlex
 from datetime import datetime
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import requests
+from django.conf import settings
 
 REQUEST_TIMEOUT = 15
 MAX_BODY_PREVIEW = 500
+MAX_REDIRECTS = 3
 
 HTTP_METHODS = ('GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS')
+ALLOWED_SCHEMES = ('http', 'https')
 
 VARIABLE_PATTERN = re.compile(r'\{\{\s*([^{}]+?)\s*\}\}')
 
@@ -352,6 +357,93 @@ def _size_text(size):
     return f'{size / (1024 * 1024):.2f} MB'
 
 
+class UnsafeUrlError(ValueError):
+    """目标 URL 不满足安全校验 (SSRF 防护)"""
+
+
+def _is_forbidden_ip(ip):
+    """内网 / 回环 / 链路本地 / 保留 / 组播 / 未指定地址一律禁止"""
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def validate_outbound_url(url, allow_private=None):
+    """
+    校验服务端即将发起的出站请求地址, 防止 SSRF。
+
+    - 只允许 http / https
+    - 禁止访问内网、回环、链路本地(含云厂商 metadata)、保留地址
+    - allow_private 为 None 时读取 settings.API_DEBUG_ALLOW_PRIVATE_NETWORK
+    """
+    if allow_private is None:
+        allow_private = getattr(settings, 'API_DEBUG_ALLOW_PRIVATE_NETWORK', False)
+
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        raise UnsafeUrlError('仅允许 http:// 或 https:// 协议')
+    host = parts.hostname
+    if not host:
+        raise UnsafeUrlError('URL 缺少有效主机名')
+
+    def _safe_directly(hostname):
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            return False
+        return not (_is_forbidden_ip(address) and not allow_private)
+
+    # 主机名直接是 IP 时无需 DNS 解析
+    if _safe_directly(host):
+        return True
+
+    try:
+        default_port = 443 if parts.scheme.lower() == 'https' else 80
+        infos = socket.getaddrinfo(host, parts.port or default_port,
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeUrlError(f'域名解析失败: {host}') from exc
+
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split('%')[0])
+        if _is_forbidden_ip(address) and not allow_private:
+            raise UnsafeUrlError(f'禁止访问内网/保留地址: {host}')
+    return True
+
+
+def _perform_request(method, url, **kwargs):
+    """发起请求并逐跳校验重定向目标, 防止利用 302 绕过 SSRF 校验"""
+    current_url = url
+    current_method = method
+    for _ in range(MAX_REDIRECTS + 1):
+        validate_outbound_url(current_url)
+        response = requests.request(
+            method=current_method,
+            url=current_url,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
+            **kwargs,
+        )
+        location = response.headers.get('Location')
+        if not (response.is_redirect and location):
+            return response
+        current_url = urljoin(current_url, location)
+        if response.status_code in (301, 302, 303) and current_method != 'HEAD':
+            # 浏览器语义: 重定向后改为 GET 且丢弃请求体
+            current_method = 'GET'
+            kwargs.update(json=None, data=None, files=None)
+            headers = dict(kwargs.get('headers') or {})
+            headers.pop('Content-Type', None)
+            headers.pop('content-type', None)
+            kwargs['headers'] = headers
+    raise UnsafeUrlError(f'重定向次数超过 {MAX_REDIRECTS} 次')
+
+
 def _prepare_body(body_type, body, headers):
     """返回 (json_payload, data_payload, files_payload)"""
     body_type = (body_type or 'none').lower()
@@ -428,17 +520,21 @@ def execute_debug(config, environment=None):
 
     started = datetime.now()
     try:
-        response = requests.request(
-            method=method,
-            url=resolved_url,
+        response = _perform_request(
+            method,
+            resolved_url,
             headers=headers,
             params=params or None,
             json=json_payload,
             data=data_payload,
             files=files_payload,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
         )
+    except UnsafeUrlError as exc:
+        return {
+            'success': False,
+            'error': f'目标地址被安全策略拦截: {exc}',
+            'request': request_snapshot,
+        }
     except requests.exceptions.Timeout:
         return {
             'success': False,

@@ -2,6 +2,7 @@
  * Auth Store - 登录态 & 用户信息
  */
 import { defineStore } from 'pinia'
+import axios from 'axios'
 import { http } from '@/utils/request'
 import router from '@/router'
 
@@ -87,6 +88,16 @@ export const useAuthStore = defineStore('auth', {
     },
 
     logout() {
+      // 通知后端把 refresh token 加入黑名单 (使用裸 axios, 避免触发 401 刷新流程)
+      if (this.refreshToken) {
+        axios
+          .post(
+            `${import.meta.env.VITE_API_BASE || ''}/api/users/logout/`,
+            { refresh: this.refreshToken },
+            { headers: this.token ? { Authorization: `Bearer ${this.token}` } : {} }
+          )
+          .catch(() => {})
+      }
       this.token = ''
       this.refreshToken = ''
       this.userInfo = null

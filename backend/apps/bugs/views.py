@@ -10,14 +10,16 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 
 from apps.projects.models import Project
+from apps.projects.services import accessible_projects
 from apps.testcases.services import get_descendant_module_ids
 from apps.users.models import User
+from utils.db import retry_on_integrity_error
 from .models import Bug, BugHistory
 from .serializers import (
     BugListSerializer, BugSerializer, BugHistorySerializer,
@@ -36,13 +38,6 @@ ALLOWED_TRANSITIONS = {
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')
 MAX_IMAGE_SIZE = 5 * 1024 * 1024
-
-
-def accessible_projects(user):
-    """当前用户可见的项目 (admin 全部)"""
-    if user.is_superuser or getattr(user, 'is_admin', False):
-        return Project.objects.all()
-    return Project.objects.filter(Q(members=user) | Q(creator=user)).distinct()
 
 
 class BugPermission(BasePermission):
@@ -71,8 +66,6 @@ class BugPermission(BasePermission):
         if not code:
             return True
         perms = user.get_all_permissions()
-        if not perms:  # 空集合代表拥有全部权限
-            return True
         return code in perms
 
 
@@ -96,8 +89,10 @@ class BugViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if not (user.is_superuser or getattr(user, 'is_admin', False)):
+            # 未关联项目的缺陷仅创建人可见, 避免越权查看他人数据
             qs = qs.filter(
-                Q(project__in=accessible_projects(user)) | Q(project__isnull=True)
+                Q(project__in=accessible_projects(user))
+                | Q(project__isnull=True, creator=user)
             ).distinct()
 
         params = self.request.query_params
@@ -157,12 +152,19 @@ class BugViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if project and not accessible_projects(user).filter(pk=project.pk).exists():
             raise PermissionDenied('无权在该项目下创建缺陷')
-        serializer.save(bug_no=generate_bug_no(), creator=user)
-        bug = serializer.instance
-        BugHistory.objects.create(
-            bug=bug, operator=user, action='CREATE', to_status=bug.status,
-            comment='创建缺陷',
-        )
+        if not project and not (user.is_superuser or getattr(user, 'is_admin', False)):
+            raise PermissionDenied('仅管理员可创建未关联项目的缺陷')
+
+        def _create():
+            serializer.save(bug_no=generate_bug_no(), creator=user)
+            bug = serializer.instance
+            BugHistory.objects.create(
+                bug=bug, operator=user, action='CREATE', to_status=bug.status,
+                comment='创建缺陷',
+            )
+            return bug
+
+        retry_on_integrity_error(_create)
 
     def perform_update(self, serializer):
         user = self.request.user
@@ -299,7 +301,7 @@ class BugViewSet(viewsets.ModelViewSet):
         if project_id and project_id != 'unassigned':
             project = Project.objects.filter(pk=project_id).first()
             if not project:
-                return Response({'msg': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+                raise NotFound('项目不存在')
             if not accessible_projects(request.user).filter(pk=project.pk).exists():
                 raise PermissionDenied('无权访问该项目')
             users = list(project.members.all().prefetch_related('roles'))
@@ -323,13 +325,12 @@ class BugViewSet(viewsets.ModelViewSet):
     def upload_image(self, request):
         upload = request.FILES.get('file')
         if not upload:
-            return Response({'msg': '请选择图片文件'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'file': '请选择图片文件'})
         ext = os.path.splitext(upload.name)[1].lower()
         if ext not in IMAGE_EXTS:
-            return Response({'msg': '仅支持 png/jpg/jpeg/gif/webp/bmp 图片'},
-                            status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'file': '仅支持 png/jpg/jpeg/gif/webp/bmp 图片'})
         if upload.size > MAX_IMAGE_SIZE:
-            return Response({'msg': '图片不能超过 5MB'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'file': '图片不能超过 5MB'})
 
         filename = f'bugs/{uuid.uuid4().hex}{ext}'
         saved_name = default_storage.save(filename, upload)

@@ -1,10 +1,10 @@
 """
 Projects app views - Project & TestModule CRUD
 """
-from rest_framework import viewsets, status, mixins
-from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Count, Q
@@ -87,7 +87,7 @@ class TestModuleViewSet(viewsets.ModelViewSet):
         """树形结构列表"""
         project_id = request.query_params.get('project_id')
         if not project_id:
-            return Response({'msg': '必须提供 project_id'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'project_id': '必须提供 project_id'})
         modules = self.get_queryset().filter(
             parent__isnull=True
         ).order_by('sort_order', 'id')
@@ -104,7 +104,7 @@ class ModuleTreeView(APIView):
 
         project = Project.objects.filter(pk=project_id).first()
         if not project:
-            return Response({'msg': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+            raise NotFound('项目不存在')
         if not can_access_project(request.user, project):
             raise PermissionDenied('无权访问该项目')
 
@@ -159,7 +159,7 @@ class ProjectMemberListView(APIView):
     def get(self, request, project_id):
         project = Project.objects.filter(pk=project_id).first()
         if not project:
-            return Response({'msg': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+            raise NotFound('项目不存在')
         if not can_access_project(request.user, project):
             raise PermissionDenied('无权访问该项目')
 
@@ -199,7 +199,7 @@ class ProjectEnvironmentViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         if not request.query_params.get('project_id'):
-            return Response({'msg': '必须提供 project_id'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'project_id': '必须提供 project_id'})
         return super().list(request, *args, **kwargs)
 
     def perform_create(self, serializer):

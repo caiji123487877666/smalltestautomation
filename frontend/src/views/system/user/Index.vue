@@ -266,11 +266,14 @@ async function handleDelete(row: any) {
 
 async function handleResetPwd(row: any) {
   const { value } = await ElMessageBox.prompt(
-    `为用户 "${row.username}" 重置密码 (留空默认为 default123)`,
+    `为用户 "${row.username}" 设置新密码 (至少 8 位, 不能为纯数字)`,
     '重置密码',
-    { inputPattern: /^.{0,32}$/, inputErrorMessage: '密码长度不超过 32 位' }
+    {
+      inputPattern: /^(?=.*[A-Za-z])(?=.*\d).{8,32}$/,
+      inputErrorMessage: '密码需 8-32 位, 且同时包含字母和数字',
+    }
   )
-  await userApi.resetPassword(row.id, value || 'default123')
+  await userApi.resetPassword(row.id, value)
   ElMessage.success('密码已重置')
 }
 

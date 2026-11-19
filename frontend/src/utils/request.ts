@@ -90,8 +90,13 @@ request.interceptors.response.use(
           { refresh: refreshToken }
         )
         const newAccessToken = res.data?.access
+        const newRefreshToken = res.data?.refresh
         if (newAccessToken) {
           localStorage.setItem('access_token', newAccessToken)
+          // 开启 refresh 轮换后, 新 refresh token 必须覆盖旧的, 否则下次刷新会失败
+          if (newRefreshToken) {
+            localStorage.setItem('refresh_token', newRefreshToken)
+          }
           // 队列中的请求用新 token 重放
           pendingRequests.forEach((cb) => cb(newAccessToken))
           pendingRequests = []

@@ -13,6 +13,10 @@ from .models import TestCase
 from .services import generate_case_no
 from .serializers import normalize_api_steps, normalize_web_steps
 
+# 导入上限, 防止超大文件打爆内存
+MAX_IMPORT_FILE_SIZE = 10 * 1024 * 1024   # 10MB
+MAX_IMPORT_ROWS = 2000                    # Excel 单次最多导入行数
+
 TEMPLATE_HEADERS = [
     '用例编号(留空自动生成)',
     '用例标题*',
@@ -155,12 +159,20 @@ def _get_or_create_module(project, module_name):
 
 def import_cases_from_excel(file_obj, project, user):
     """解析 Excel 批量入库, 返回成功/失败明细"""
+    size = getattr(file_obj, 'size', None)
+    if size and size > MAX_IMPORT_FILE_SIZE:
+        return {'success': 0, 'failed': 1, 'errors': [
+            {'row': 0, 'msg': f'文件不能超过 {MAX_IMPORT_FILE_SIZE // (1024 * 1024)}MB'}]}
+
     try:
         wb = load_workbook(file_obj, data_only=True)
     except Exception as exc:  # noqa: BLE001
         return {'success': 0, 'failed': 1, 'errors': [{'row': 0, 'msg': f'文件解析失败: {exc}'}]}
 
     ws = wb['用例数据'] if '用例数据' in wb.sheetnames else wb.active
+    if ws.max_row > MAX_IMPORT_ROWS + 1:
+        return {'success': 0, 'failed': 1, 'errors': [
+            {'row': 0, 'msg': f'单次最多导入 {MAX_IMPORT_ROWS} 行, 当前 {ws.max_row - 1} 行'}]}
 
     success, errors = 0, []
     rows = list(ws.iter_rows(min_row=2, values_only=True))
@@ -237,6 +249,10 @@ def import_cases_from_excel(file_obj, project, user):
 
 def import_cases_from_swagger(file_obj, project, user):
     """解析 Swagger/OpenAPI JSON, 生成 API 类型用例"""
+    size = getattr(file_obj, 'size', None)
+    if size and size > MAX_IMPORT_FILE_SIZE:
+        return {'success': 0, 'failed': 1, 'errors': [
+            {'row': 0, 'msg': f'文件不能超过 {MAX_IMPORT_FILE_SIZE // (1024 * 1024)}MB'}]}
     try:
         raw = file_obj.read()
         if isinstance(raw, bytes):

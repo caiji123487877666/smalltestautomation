@@ -3,7 +3,7 @@ TestCases app serializers
 """
 from rest_framework import serializers
 
-from apps.projects.models import Project, TestModule
+from apps.projects.models import Project
 from .models import TestCase
 
 API_METHODS = ('GET', 'POST', 'PUT', 'DELETE', 'PATCH')
@@ -152,6 +152,10 @@ class TestCaseSerializer(OpenBugCountMixin, ModulePathMixin, serializers.ModelSe
         module = attrs.get('module', getattr(self.instance, 'module', None))
         if module and project and module.project_id != project.id:
             raise serializers.ValidationError({'module': '模块不属于所选项目'})
+        # 新建时未提供 steps: 按用例类型补齐默认结构 (WEB 为数组, API 为对象)
+        if self.instance is None and 'steps' not in attrs:
+            case_type = attrs.get('case_type', 'API')
+            attrs['steps'] = [] if case_type == 'WEB' else normalize_api_steps({})
         return attrs
 
 

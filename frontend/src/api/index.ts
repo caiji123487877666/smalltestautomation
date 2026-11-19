@@ -34,7 +34,7 @@ export const userApi = {
   create: (data: UserAdmin) => http.post('/api/users/admin/users/', data),
   update: (id: number, data: UserAdmin) => http.put(`/api/users/admin/users/${id}/`, data),
   delete: (id: number) => http.delete(`/api/users/admin/users/${id}/`),
-  resetPassword: (id: number, password: string = 'default123') =>
+  resetPassword: (id: number, password: string) =>
     http.post(`/api/users/admin/users/${id}/reset-password/`, { password }),
   toggleActive: (id: number) => http.post(`/api/users/admin/users/${id}/toggle-active/`),
 }

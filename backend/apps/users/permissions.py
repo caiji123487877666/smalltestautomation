@@ -39,7 +39,4 @@ class HasRolePermission(BasePermission):
         if not self.permission_codes:
             return True  # 无权限要求则放行
         user_perms = request.user.get_all_permissions()
-        # 空集合 = 全部权限
-        if not user_perms:
-            return True
         return any(c in user_perms for c in self.permission_codes)

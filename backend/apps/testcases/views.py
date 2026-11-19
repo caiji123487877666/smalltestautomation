@@ -11,11 +11,13 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.projects.models import Project, TestModule
+from apps.projects.services import accessible_projects
+from utils.db import retry_on_integrity_error
 from .models import TestCase
 from .serializers import (
     TestCaseListSerializer, TestCaseSerializer, TestCaseBatchActionSerializer,
@@ -24,13 +26,6 @@ from .services import generate_case_no, get_descendant_module_ids
 from . import excel_io
 
 XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-
-
-def accessible_projects(user):
-    """当前用户可见的项目 (admin 全部)"""
-    if user.is_superuser or getattr(user, 'is_admin', False):
-        return Project.objects.all()
-    return Project.objects.filter(Q(members=user) | Q(creator=user)).distinct()
 
 
 class TestCaseViewSet(viewsets.ModelViewSet):
@@ -98,7 +93,8 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 _tags_text=Cast('tags', output_field=CharField())
             ).filter(Q(_tags_text__icontains=tag) | Q(_tags_text__icontains=escaped))
 
-        return qs
+        # 显式排序, 保证分页结果稳定
+        return qs.order_by('-updated_at', '-id')
 
     # ---------- 创建 / 更新 ----------
     def perform_create(self, serializer):
@@ -106,11 +102,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if not accessible_projects(user).filter(pk=project.pk).exists():
             raise PermissionDenied('无权在该项目下创建用例')
-        serializer.save(
+        # 并发创建时编号可能冲突, 冲突则重新生成并重试
+        retry_on_integrity_error(lambda: serializer.save(
             case_no=generate_case_no(project),
             creator=user,
             updater=user,
-        )
+        ))
 
     def perform_update(self, serializer):
         project = serializer.validated_data.get('project', serializer.instance.project)
@@ -124,20 +121,24 @@ class TestCaseViewSet(viewsets.ModelViewSet):
     def duplicate(self, request, pk=None):
         case = self.get_object()
         new_title = f'{case.title} - 副本'
-        clone = TestCase.objects.create(
-            project=case.project,
-            module=case.module,
-            case_no=generate_case_no(case.project),
-            title=new_title[:255],
-            case_type=case.case_type,
-            priority=case.priority,
-            status=case.status,
-            precondition=case.precondition,
-            tags=list(case.tags or []),
-            steps=case.steps,
-            creator=request.user,
-            updater=request.user,
-        )
+
+        def _duplicate():
+            return TestCase.objects.create(
+                project=case.project,
+                module=case.module,
+                case_no=generate_case_no(case.project),
+                title=new_title[:255],
+                case_type=case.case_type,
+                priority=case.priority,
+                status=case.status,
+                precondition=case.precondition,
+                tags=list(case.tags or []),
+                steps=case.steps,
+                creator=request.user,
+                updater=request.user,
+            )
+
+        clone = retry_on_integrity_error(_duplicate)
         return Response(TestCaseSerializer(clone).data, status=status.HTTP_201_CREATED)
 
     # ---------- 批量操作 ----------
@@ -191,12 +192,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         upload = request.FILES.get('file')
         project_id = request.data.get('project_id')
         if not upload:
-            return Response({'msg': '请上传 Excel 文件'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'file': '请上传 Excel 文件'})
         if not project_id:
-            return Response({'msg': '缺少 project_id'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'project_id': '缺少 project_id'})
         project = Project.objects.filter(pk=project_id).first()
         if not project:
-            return Response({'msg': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+            raise NotFound('项目不存在')
         if not accessible_projects(request.user).filter(pk=project.pk).exists():
             raise PermissionDenied('无权在该项目下导入用例')
 
@@ -226,12 +227,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         upload = request.FILES.get('file')
         project_id = request.data.get('project_id')
         if not upload:
-            return Response({'msg': '请上传 Swagger/OpenAPI JSON 文件'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'file': '请上传 Swagger/OpenAPI JSON 文件'})
         if not project_id:
-            return Response({'msg': '缺少 project_id'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'project_id': '缺少 project_id'})
         project = Project.objects.filter(pk=project_id).first()
         if not project:
-            return Response({'msg': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+            raise NotFound('项目不存在')
         if not accessible_projects(request.user).filter(pk=project.pk).exists():
             raise PermissionDenied('无权在该项目下导入用例')
 

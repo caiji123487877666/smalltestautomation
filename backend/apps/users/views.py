@@ -1,13 +1,21 @@
 """
 Users app views - Auth, User, Role, MenuPermission CRUD
 """
-from rest_framework import viewsets, generics, status, mixins
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework import viewsets, status
+from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.views import TokenRefreshView
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 
+from utils.throttles import LoginRateThrottle, RegisterRateThrottle
 from .models import User, Role, MenuPermission
 from .serializers import (
     LoginSerializer, RegisterSerializer, UserMeSerializer,
@@ -19,6 +27,7 @@ from .permissions import IsAdminRole
 # ============== Auth (公开) ==============
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([LoginRateThrottle])
 def login_view(request):
     """JWT 登录"""
     serializer = LoginSerializer(data=request.data)
@@ -28,6 +37,7 @@ def login_view(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([RegisterRateThrottle])
 def register_view(request):
     """用户注册 (默认分配 tester 角色)"""
     serializer = RegisterSerializer(data=request.data)
@@ -43,6 +53,21 @@ def register_view(request):
 class CustomTokenRefreshView(TokenRefreshView):
     """刷新 JWT"""
     pass
+
+
+class LogoutView(APIView):
+    """退出登录: 将 refresh token 加入黑名单, 使其立即失效"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        refresh = request.data.get('refresh')
+        if not refresh:
+            raise ValidationError({'refresh': '必须提供 refresh token'})
+        try:
+            RefreshToken(refresh).blacklist()
+        except TokenError:
+            raise ValidationError({'refresh': 'refresh token 无效或已过期'})
+        return Response({'msg': '已退出登录'})
 
 
 # ============== 当前用户 ==============
@@ -79,12 +104,21 @@ class UserAdminViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='reset-password')
     def reset_password(self, request, pk=None):
-        """重置密码"""
+        """重置密码: 必须提供新密码, 并走 Django 密码强度校验"""
         user = self.get_object()
-        new_pwd = request.data.get('password', 'default123')
+        new_pwd = request.data.get('password') or ''
+        if not new_pwd:
+            raise ValidationError({'password': '请输入新密码'})
+        try:
+            validate_password(new_pwd, user)
+        except DjangoValidationError as exc:
+            raise ValidationError({'password': '; '.join(exc.messages)})
         user.set_password(new_pwd)
-        user.save()
-        return Response({'msg': f'密码已重置为: {new_pwd}'})
+        user.save(update_fields=['password'])
+        # 改密后使该用户已签发的 refresh token 全部失效
+        for token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token)
+        return Response({'msg': '密码已重置'})
 
     @action(detail=True, methods=['post'], url_path='toggle-active')
     def toggle_active(self, request, pk=None):

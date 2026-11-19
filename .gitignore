@@ -7,6 +7,7 @@ venv/
 env/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -27,10 +28,9 @@ dist-ssr/
 # 本地便携运行时
 node-v20.18.0-win-x64/
 
-# 环境配置 (模板 .env.example 保留)
+# 环境配置 (所有 .env* 均忽略, 只保留模板 .env.example)
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
 
 # 编辑器 / 系统

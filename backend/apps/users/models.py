@@ -73,9 +73,14 @@ class User(AbstractUser):
         return self.roles.filter(code='admin').exists() or self.is_superuser
 
     def get_all_permissions(self):
-        """获取用户所有权限码（去重）"""
+        """
+        获取用户所有权限码（去重）。
+
+        注意: 超级管理员 / admin 角色返回空集, 调用方必须先判断管理员身份,
+        不能把空集当作"拥有全部权限", 否则无任何权限配置的普通用户会被误放行。
+        """
         if self.is_superuser or self.is_admin:
-            return set()  # 空表示全部权限
+            return set()
         perms = set()
         for role in self.roles.all():
             for p in role.permissions.filter(permission_code__isnull=False).exclude(permission_code=''):
